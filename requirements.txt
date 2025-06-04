@@ -1,0 +1,17 @@
+# Core RAG Framework
+chromadb>=0.4.22
+requests>=2.31.0
+
+# Web Interface
+streamlit==1.29.0
+
+# Document Processing
+python-docx==1.1.0
+pypdf>=3.0.0
+PyMuPDF>=1.23.8
+
+# Utilities
+python-dotenv>=1.0.1
+pathlib==1.0.1
+watchdog==3.0.0
+numpy>=1.19.3,<2.0.0 
