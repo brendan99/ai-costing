@@ -15,6 +15,8 @@ import gc
 import shutil
 import psutil
 from sentence_transformers import SentenceTransformer
+from legal_chunking import legal_aware_chunk_text
+from legal_entity_extraction import extract_entities
 
 # Constants
 UPLOAD_DIR = "./uploads"
@@ -41,6 +43,10 @@ if 'log_buffer' not in st.session_state:
     st.session_state.log_buffer = []
 if 'doc_status' not in st.session_state:
     st.session_state.doc_status = {}
+if 'show_logs' not in st.session_state:
+    st.session_state.show_logs = False
+if 'processing' not in st.session_state:
+    st.session_state.processing = False
 
 LOG_BUFFER_SIZE = 50
 
@@ -141,37 +147,12 @@ def check_documents_changed():
         return True
     return False
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
-    """Split text into overlapping chunks with detailed logging."""
-    st.write(f"[LOG] chunk_text: input text length = {len(text)}")
-    print(f"[LOG] chunk_text: input text length = {len(text)}")
-    chunks = []
-    start = 0
-    text_length = len(text)
-    chunk_num = 0
-    while start < text_length:
-        end = start + chunk_size
-        if end > text_length:
-            end = text_length
-        chunk = text[start:end]
-        chunks.append(chunk)
-        st.write(f"[LOG] chunk_text: chunk {chunk_num+1}: start={start}, end={end}, length={len(chunk)}")
-        print(f"[LOG] chunk_text: chunk {chunk_num+1}: start={start}, end={end}, length={len(chunk)}")
-        chunk_num += 1
-        # Prevent infinite loop if overlap >= chunk_size
-        if end == text_length or chunk_size <= overlap:
-            break
-        start = end - overlap
-    st.write(f"[LOG] chunk_text: total chunks created = {len(chunks)}")
-    print(f"[LOG] chunk_text: total chunks created = {len(chunks)}")
-    return chunks
-
 def log_memory_usage(note=""):
     process = psutil.Process(os.getpid())
     mem = process.memory_info().rss / (1024 * 1024 * 1024)  # in GB
     msg = f"[MEMORY] {note} - Current usage: {mem:.2f} GB"
     print(msg)
-    st.write(msg)
+    add_log(msg)
 
 def process_document(file_path: str) -> List[Dict[str, Any]]:
     """Process a document and return all chunks with metadata."""
@@ -185,8 +166,7 @@ def process_document(file_path: str) -> List[Dict[str, Any]]:
         ext = os.path.splitext(file_path)[1].lower()
         text = ""
 
-        st.write(f"[LOG] Starting chunking for {file_path}")
-        print(f"[LOG] Starting chunking for {file_path}")
+        add_log(f"Processing {os.path.basename(file_path)}")
 
         if ext == ".pdf":
             try:
@@ -216,31 +196,21 @@ def process_document(file_path: str) -> List[Dict[str, Any]]:
             st.error(f"Unsupported file type: {ext}")
             return []
 
-        st.write(f"[LOG] Finished reading file, now chunking text for {file_path}")
-        print(f"[LOG] Finished reading file, now chunking text for {file_path}")
-        text_chunks = chunk_text(text)
-        st.write(f"[LOG] {file_path}: {len(text_chunks)} chunks created.")
-        print(f"[LOG] {file_path}: {len(text_chunks)} chunks created.")
-        total_text_size = sum(len(chunk) for chunk in text_chunks)
-        st.write(f"[LOG] Total chunked text size: {total_text_size} characters.")
-        print(f"[LOG] Total chunked text size: {total_text_size} characters.")
-        log_memory_usage(f"After chunking {file_path}")
+        # Use legal-aware chunking
+        text_chunks = legal_aware_chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP)
+        add_log(f"Created {len(text_chunks)} legal-aware chunks for {os.path.basename(file_path)}")
+        
         for i, chunk in enumerate(text_chunks):
             chunk_metadata = metadata.copy()
             chunk_metadata.update({
                 'chunk_id': i,
                 'total_chunks': len(text_chunks)
             })
-            st.write(f"[LOG] Chunk {i+1} size: {len(chunk)} characters.")
-            print(f"[LOG] Chunk {i+1} size: {len(chunk)} characters.")
-            st.write(f"[LOG] Chunk {i+1} text: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
-            print(f"[LOG] Chunk {i+1} text: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
             chunks.append({
                 'text': chunk,
                 'metadata': chunk_metadata
             })
-        st.write(f"[LOG] Finished chunking for {file_path}")
-        print(f"[LOG] Finished chunking for {file_path}")
+        
         return chunks
     except Exception as e:
         st.error(f"Error processing document {file_path}: {str(e)}")
@@ -339,9 +309,13 @@ class StreamlitEmbeddingFunction:
         if self.is_bge:
             input = [f"passage: {t}" for t in input]
         result = self.model.encode(input, show_progress_bar=False)
+        # Handle both numpy arrays and lists
         if hasattr(result, 'tolist'):
             return result.tolist()
-        return result
+        elif isinstance(result, list):
+            return result
+        else:
+            return result.tolist() if hasattr(result, 'tolist') else list(result)
     @staticmethod
     def name():
         return "streamlit-sentence-transformers"
@@ -396,53 +370,69 @@ def load_documents():
     """Load and process only unprocessed documents from the uploads directory."""
     try:
         st.session_state.processing = True
-        st.write("[LOG] Starting document processing...")
         add_log("Starting document processing...")
+        
         # Get unprocessed files
         file_list = get_unprocessed_files()
-        st.write(f"[LOG] Found {len(file_list)} unprocessed files")
         add_log(f"Found {len(file_list)} unprocessed files")
+        
         if not file_list:
             st.info("No new documents to process. All files in uploads/ have been indexed.")
             st.session_state.processing = False
             return None
+            
         # Initialize ChromaDB
         try:
             client = get_chroma_client()
             collection = get_chroma_collection()
-            st.write("[LOG] Successfully initialized ChromaDB")
             add_log("Successfully initialized ChromaDB")
         except Exception as e:
             st.error(f"Failed to initialize ChromaDB: {str(e)}")
             add_log(f"Failed to initialize ChromaDB: {str(e)}")
             st.session_state.processing = False
             return None
+            
+        # Create a status container at the top
+        status_container = st.empty()
         progress_bar = st.progress(0, text="Processing documents...")
         total_files = len(file_list)
-        batch_status = st.empty()
-        file_status = st.empty()
-        if st.session_state.get('processing', False):
-            log_placeholder = st.empty()
-        batch_status.info(f"Processing {total_files} documents...")
+        
+        # Live log container that only shows during processing
+        log_container = st.container()
+        
         for file_idx, filename in enumerate(file_list):
             file_path = os.path.join(UPLOAD_DIR, filename)
-            file_status.info(f"Processing file {file_idx+1}/{total_files}: {filename}")
             add_log(f"Processing file {file_idx+1}/{total_files}: {filename}")
             update_doc_status(filename, 'Processing')
+            
+            # Update status container
+            status_container.markdown(f"""
+            ### Processing Status
+            - **Current File:** {filename}
+            - **Progress:** {file_idx + 1}/{total_files} files
+            - **Status:** Processing
+            """)
+            
+            # Update live logs during processing
+            with log_container:
+                st.text("\n".join(st.session_state.log_buffer[-5:]))
+            
             log_memory_usage(f"Before processing {filename}")
             chunks = process_document(file_path)
+            
             if not chunks:
                 st.warning(f"No chunks extracted from {filename}")
                 update_doc_status(filename, 'Error', 0)
                 add_log(f"No chunks extracted from {filename}")
-                if st.session_state.get('processing', False):
-                    log_placeholder.text("\n".join(st.session_state.log_buffer[-10:]))
                 continue
+                
             for i, chunk in enumerate(chunks):
                 try:
-                    add_log(f"Processing chunk {i+1} of {filename}")
-                    if st.session_state.get('processing', False):
-                        log_placeholder.text("\n".join(st.session_state.log_buffer[-10:]))
+                    add_log(f"Processing chunk {i+1}/{len(chunks)} of {filename}")
+                    # Update live logs during processing
+                    with log_container:
+                        st.text("\n".join(st.session_state.log_buffer[-5:]))
+                        
                     embedding = st_embedding_fn([chunk['text']])[0]
                     collection.add(
                         embeddings=[embedding],
@@ -450,28 +440,37 @@ def load_documents():
                         metadatas=[chunk['metadata']],
                         ids=[f"{filename}_{chunk['metadata']['chunk_id']}"]
                     )
-                    add_log(f"Added chunk {i+1} of {filename} to ChromaDB")
-                    if st.session_state.get('processing', False):
-                        log_placeholder.text("\n".join(st.session_state.log_buffer[-10:]))
+                    
                 except Exception as e:
                     st.error(f"Error processing chunk {i+1} of {filename}: {str(e)}")
                     add_log(f"Error processing chunk {i+1} of {filename}: {str(e)}")
-                    if st.session_state.get('processing', False):
-                        log_placeholder.text("\n".join(st.session_state.log_buffer[-10:]))
                     continue
-                progress_bar.progress((file_idx + (i+1)/len(chunks)) / total_files, text=f"Processing {filename} ({i+1}/{len(chunks)})")
+                    
+                progress_bar.progress((file_idx + (i+1)/len(chunks)) / total_files, 
+                                    text=f"Processing {filename} ({i+1}/{len(chunks)})")
+                                    
             update_doc_status(filename, 'Indexed', len(chunks))
             mark_file_indexed(filename)
             move_to_processed(file_path)
             gc.collect()
             progress_bar.progress((file_idx+1)/total_files, text=f"Processed {filename}")
-        batch_status.info(f"Processed {total_files} documents successfully!")
-        file_status.empty()
+            
+        # Update final status
+        status_container.markdown("""
+        ### Processing Complete! ✅
+        - All documents have been processed and indexed
+        - You can now search your documents
+        """)
+        
+        # Clear the live log container after processing
+        log_container.empty()
+        
         st.session_state.documents_loaded = True
         st.success("Document processing completed!")
         add_log("Document processing completed!")
         st.session_state.processing = False
         return collection
+        
     except Exception as e:
         st.error(f"Error loading documents: {str(e)}")
         add_log(f"Error loading documents: {str(e)}")
@@ -484,16 +483,23 @@ def search_documents(query: str, collection) -> List[Dict[str, Any]]:
     try:
         if not query.strip():
             return []
+            
         # For BGE/E5, prefix 'query: ' to the query
         if IS_BGE:
             query_for_embedding = f"query: {query}"
         else:
             query_for_embedding = query
+            
+        # Get the embedding for the query
+        query_embedding = st_embedding_fn([query_for_embedding])[0]
+        
+        # Use the embedding directly in the query
         results = collection.query(
-            query_texts=[query_for_embedding],
-            n_results=5,  # Increase number of results
+            query_embeddings=[query_embedding],
+            n_results=5,
             include=["documents", "metadatas", "distances"]
         )
+        
         # Format results with better metadata
         formatted_results = []
         for i, (doc, metadata, distance) in enumerate(zip(
@@ -503,14 +509,15 @@ def search_documents(query: str, collection) -> List[Dict[str, Any]]:
         )):
             formatted_results.append({
                 "text": doc,
-                "source": metadata.get("source", "Unknown"),
-                "chunk": metadata.get("chunk", 0),
-                "distance": distance,
+                "source": metadata.get("filename", "Unknown"),
+                "chunk": metadata.get("chunk_id", 0),
+                "distance": float(distance),  # Ensure distance is a float
                 "rank": i + 1
             })
         return formatted_results
     except Exception as e:
         st.error(f"Error searching documents: {str(e)}")
+        print(f"Search error details: {str(e)}")  # Add detailed error logging
         return []
 
 # Create necessary directories
@@ -523,101 +530,102 @@ st.title("Legal Document RAG System")
 
 # Sidebar for document upload
 with st.sidebar:
-    st.header("Document Upload")
-    # System Resource Monitor
-    cpu = psutil.cpu_percent(interval=0.1)
-    mem = psutil.virtual_memory().percent
-    st.markdown(f"**CPU Usage:** {cpu}%  |  **Memory Usage:** {mem}%")
+    st.header("📁 Document Upload")
+    
+    # Collapsible System Monitor
+    with st.expander("System Monitor", expanded=False):
+        cpu = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory().percent
+        st.markdown(f"**CPU Usage:** {cpu}%")
+        st.markdown(f"**Memory Usage:** {mem}%")
+        st.markdown(f"**Documents Indexed:** {len(get_processed_files())}")
+        st.markdown(f"**Total Chunks:** {get_total_chunks()}")
+        st.markdown(f"**Storage Usage:** {get_storage_usage()} KB")
 
-    # Single Reset All Button
-    if st.button("Reset All", type="primary"):
-        try:
-            # Delete uploads, processed, storage, and index log
-            for folder in ['uploads', PROCESSED_DIR, 'storage']:
-                if os.path.exists(folder):
-                    shutil.rmtree(folder)
-                os.makedirs(folder, exist_ok=True)
-                os.chmod(folder, 0o777)
-            # Remove index log
-            if os.path.exists(INDEX_LOG):
-                os.remove(INDEX_LOG)
-            # Also delete ChromaDB collection
-            try:
-                client = chromadb.HttpClient(host="localhost", port=8000)
-                client.delete_collection("legal_documents")
-            except Exception as e:
-                st.warning(f"Could not delete ChromaDB collection: {e}")
-            # Clear session state
-            st.session_state.last_processed_hash = None
-            st.session_state.documents_loaded = False
-            st.session_state.uploaded_files = []
-            st.session_state.doc_status = {}
-            st.session_state.log_buffer = []
-            # Force garbage collection
-            gc.collect()
-            st.success("All data and indexes reset! Please restart or re-upload documents.")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error resetting everything: {str(e)}")
-
-    # Per-Document Status Table
-    st.subheader("Document Status")
-    if st.session_state.doc_status:
-        st.table([
-            {
-                'Document': k,
-                'Status': v['status'],
-                'Chunks': v['chunk_count'] if v['chunk_count'] is not None else '-',
-                'Last Update': v['last_time'],
-                'Re-Index': f"Re-Index {k}"
-            }
-            for k, v in st.session_state.doc_status.items()
-        ])
-        # Manual Re-Index/Retry Buttons
-        for k, v in st.session_state.doc_status.items():
-            if st.button(f"Re-Index {k}"):
-                # Move file back to uploads and remove from processed/indexed
-                processed_path = os.path.join(PROCESSED_DIR, k)
-                upload_path = os.path.join(UPLOAD_DIR, k)
-                if os.path.exists(processed_path):
-                    shutil.move(processed_path, upload_path)
-                mark_file_indexed(k, remove=True)
-                update_doc_status(k, 'Queued', None)
-                st.success(f"Queued {k} for re-indexing. Please rerun processing.")
-                st.rerun()
-    else:
-        st.write("No document status available.")
-
-    # Upload UI
+    # Upload UI - simplified
     uploaded_files = st.file_uploader(
         "Upload Legal Documents",
         type=['pdf', 'txt', 'docx', 'md'],
         accept_multiple_files=True,
         help="Upload your case documents. Supported formats: PDF, TXT, DOCX, MD"
     )
+    
     if uploaded_files:
         for uploaded_file in uploaded_files:
             if uploaded_file.name not in st.session_state.uploaded_files:
-                with st.spinner(f"Processing {uploaded_file.name}..."):
+                with st.spinner(f"Uploading {uploaded_file.name}..."):
                     try:
                         file_path = save_uploaded_file(uploaded_file)
                         if file_path:
                             st.session_state.uploaded_files.append(uploaded_file.name)
-                            st.success(f"Successfully uploaded: {uploaded_file.name}")
+                            st.success(f"✅ {uploaded_file.name}")
                             st.rerun()
                     except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-    # Display uploaded files
+                        st.error(f"❌ Error uploading {uploaded_file.name}: {str(e)}")
+
+    # Compact file list
     if st.session_state.uploaded_files:
-        st.subheader("Uploaded Documents")
-        for file_name in st.session_state.uploaded_files:
+        st.subheader("📄 Uploaded Files")
+        for file_name in st.session_state.uploaded_files[:5]:  # Show only first 5
             if os.path.exists(os.path.join('uploads', file_name)):
-                st.write(f"📄 {file_name}")
+                st.write(f"• {file_name}")
             else:
                 st.session_state.uploaded_files.remove(file_name)
                 st.rerun()
+        
+        if len(st.session_state.uploaded_files) > 5:
+            st.write(f"... and {len(st.session_state.uploaded_files) - 5} more files")
 
-# Check if documents have changed and update index if necessary
+    # Collapsible Document Management
+    with st.expander("🔧 Document Management", expanded=False):
+        # Process Documents Button
+        unprocessed_count = len(get_unprocessed_files())
+        if unprocessed_count > 0:
+            if st.button(f"Process {unprocessed_count} Documents", type="primary"):
+                st.session_state.show_logs = True
+                st.rerun()
+        
+        # Document Status
+        if st.session_state.doc_status:
+            st.write("**Document Status:**")
+            for filename, status in st.session_state.doc_status.items():
+                status_emoji = {"Processing": "⏳", "Indexed": "✅", "Error": "❌", "Queued": "📋"}.get(status['status'], "❓")
+                st.write(f"{status_emoji} {filename[:20]}{'...' if len(filename) > 20 else ''}")
+        
+        # Reset button moved here
+        if st.button("🗑️ Reset All Data", type="secondary"):
+            try:
+                # Delete uploads, processed, storage, and index log
+                for folder in ['uploads', PROCESSED_DIR, 'storage']:
+                    if os.path.exists(folder):
+                        shutil.rmtree(folder)
+                    os.makedirs(folder, exist_ok=True)
+                    os.chmod(folder, 0o777)
+                # Remove index log
+                if os.path.exists(INDEX_LOG):
+                    os.remove(INDEX_LOG)
+                # Also delete ChromaDB collection
+                try:
+                    client = chromadb.HttpClient(host="localhost", port=8000)
+                    client.delete_collection("legal_documents")
+                except Exception as e:
+                    st.warning(f"Could not delete ChromaDB collection: {e}")
+                # Clear session state
+                st.session_state.last_processed_hash = None
+                st.session_state.documents_loaded = False
+                st.session_state.uploaded_files = []
+                st.session_state.doc_status = {}
+                st.session_state.log_buffer = []
+                st.session_state.show_logs = False
+                # Force garbage collection
+                gc.collect()
+                st.success("All data reset!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error resetting: {str(e)}")
+
+# Main content area
+# Process documents if needed
 if check_documents_changed():
     with st.spinner("Updating document index..."):
         try:
@@ -628,104 +636,124 @@ if check_documents_changed():
             os.chmod('storage', 0o777)
             
             # Process documents
+            st.session_state.show_logs = True
             collection = load_documents()
             if collection:
                 st.success("Document index updated successfully!")
+                st.session_state.show_logs = False
                 gc.collect()
             else:
-                st.error("Failed to process documents. Please check the logs above.")
+                st.error("Failed to process documents.")
         except Exception as e:
             st.error(f"Error updating document index: {str(e)}")
             st.session_state.processing_error = str(e)
 
-# Main content
-st.header("Document Query")
+# Show logs only when explicitly requested or during processing
+if st.session_state.show_logs and st.session_state.log_buffer:
+    with st.expander("📋 Processing Logs", expanded=st.session_state.processing):
+        if st.button("Hide Logs"):
+            st.session_state.show_logs = False
+            st.rerun()
+        
+        # Show recent logs
+        recent_logs = st.session_state.log_buffer[-10:]
+        st.text("\n".join(recent_logs))
+        
+        if st.button("Clear Logs"):
+            st.session_state.log_buffer = []
+            st.session_state.show_logs = False
+            st.rerun()
 
-# Chunk/Index Summary
-st.markdown(f"**Total Documents Indexed:** {len(get_processed_files())}")
-st.markdown(f"**Total Chunks in Index:** {get_total_chunks()}")
-st.markdown(f"**Storage Usage:** {get_storage_usage()} KB")
+# Query section
+st.header("🔍 Document Query")
 
-# Definitive log display logic
-if st.session_state.get('processing', False):
-    # Show only during processing
-    if st.session_state.log_buffer:
-        st.caption("\n".join(st.session_state.log_buffer[-3:]))
-    if 'log_placeholder' not in st.session_state:
-        st.session_state.log_placeholder = st.empty()
-    st.session_state.log_placeholder.text("\n".join(st.session_state.log_buffer[-10:]))
-else:
-    # After processing, clear the log placeholder if it exists
-    if 'log_placeholder' in st.session_state:
-        st.session_state.log_placeholder.empty()
-        del st.session_state.log_placeholder
-    # Only show the log expander if there are logs and we're not processing
-    if st.session_state.log_buffer:
-        with st.expander("Recent Activity / Logs", expanded=False):
-            show_all = st.checkbox("Show all logs", value=False)
-            logs = st.session_state.log_buffer
-            if not show_all and len(logs) > 10:
-                st.text("\n".join(logs[-10:]))
-                st.write(f"Showing last 10 of {len(logs)} entries.")
-            else:
-                st.text("\n".join(logs))
-            if st.button("Clear Logs"):
-                st.session_state.log_buffer = []
-                st.rerun()  # Force a rerun to update the UI
+# Compact status display
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Documents", len(get_processed_files()))
+with col2:
+    st.metric("Chunks", get_total_chunks())
+with col3:
+    storage_mb = get_storage_usage() / 1024
+    st.metric("Storage", f"{storage_mb:.1f} MB")
 
 # Query input
 query = st.text_area(
     "Enter your query",
     height=100,
+    placeholder="Ask a question about your legal documents...",
     help="Ask a question about your legal documents"
 )
 
-# Use processed files to determine if search is allowed
+# Search functionality
 processed_files = get_processed_files()
 
-if st.button("Search", type="primary"):
+if st.button("🔍 Search", type="primary"):
     if not processed_files:
         st.error("Please upload and process some documents first!")
+    elif not query.strip():
+        st.warning("Please enter a query.")
     else:
         with st.spinner("Searching documents..."):
             try:
                 client = get_chroma_client()
                 collection = get_chroma_collection()
-                st.write(f"[LOG] ChromaDB collection count: {collection.count()}")
                 results = search_documents(query, collection)
+                
                 if results:
                     st.subheader("Search Results")
+                    # If the query is about claimants, defendants, applicants, or respondents, extract and show a structured list
+                    entity_keywords = ["claimant", "defendant", "applicant", "respondent"]
+                    if any(word in query.lower() for word in entity_keywords):
+                        all_entities = {k: set() for k in entity_keywords}
+                        for result in results:
+                            entities = extract_entities(result['text'], entity_keywords)
+                            for k, v in entities.items():
+                                all_entities[k].update(v)
+                        # Display structured results
+                        found_any = False
+                        for entity_type, names in all_entities.items():
+                            if names:
+                                found_any = True
+                                st.markdown(f"**{entity_type.capitalize()}s found:**")
+                                for name in sorted(names):
+                                    st.write(f"- {name}")
+                        if not found_any:
+                            st.info("No legal entities found in the top results.")
+                    # Also show the raw results as before
                     for i, result in enumerate(results, 1):
-                        with st.expander(f"Result {i} (Relevance: {1 - result['distance']:.2%})"):
+                        relevance = 1 - result['distance']
+                        with st.expander(f"Result {i} - {result['source']} (Relevance: {relevance:.1%})", 
+                                       expanded=i==1):  # Expand first result by default
                             st.write(f"**Source:** {result['source']}")
                             st.write(f"**Chunk:** {result['chunk']}")
-                            st.write(f"**Relevance Score:** {1 - result['distance']:.2%}")
-                            st.write("**Text:**")
+                            st.write(f"**Relevance Score:** {relevance:.1%}")
+                            st.write("**Content:**")
                             st.write(result['text'])
-                            st.button(f"Show in Document {i}", key=f"showdoc_{i}")
                 else:
-                    st.info("No relevant results found.")
+                    st.info("No relevant results found. Try rephrasing your query.")
             except Exception as e:
                 st.error(f"Error during search: {str(e)}")
             finally:
                 gc.collect()
 
-# Add some helpful information
-st.markdown("""
-### How to Use
-1. Upload your legal documents using the sidebar
-2. Enter your query in the text area
-3. Click 'Search' to find relevant information
-4. Review the results and their metadata
+# Help section - collapsed by default
+with st.expander("ℹ️ How to Use", expanded=False):
+    st.markdown("""
+    ### Quick Start
+    1. **Upload documents** using the sidebar file uploader
+    2. **Process documents** using the "Process Documents" button in Document Management
+    3. **Enter your query** in the text area above
+    4. **Click Search** to find relevant information
 
-### Supported Document Types
-- PDF files
-- Text files
-- Word documents
-- Markdown files
+    ### Supported Document Types
+    - PDF files (.pdf)
+    - Text files (.txt)
+    - Word documents (.docx)
+    - Markdown files (.md)
 
-### Tips
-- Keep document sizes under 10MB
-- For large documents, consider splitting them into smaller files
-- The system will automatically process documents in batches to manage memory usage
-""") 
+    ### Tips
+    - Keep document sizes under 10MB for best performance
+    - Use specific keywords in your queries for better results
+    - Check the Document Management section to monitor processing status
+    """)
