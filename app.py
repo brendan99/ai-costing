@@ -17,14 +17,19 @@ import psutil
 from sentence_transformers import SentenceTransformer
 from legal_chunking import legal_aware_chunk_text
 from legal_entity_extraction import extract_entities
+from collections import defaultdict
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Constants
 UPLOAD_DIR = "./uploads"
-CHUNK_SIZE = 128
-CHUNK_OVERLAP = 50
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 128))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 50))
 MAX_RETRIES = 3
 RETRY_DELAY = 1  # seconds
-MAX_DOCUMENT_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_DOCUMENT_SIZE = int(os.getenv("MAX_DOCUMENT_SIZE", "10485760"))  # 10MB in bytes
 PROCESSED_DIR = "./processed"
 INDEX_LOG = os.path.join(PROCESSED_DIR, "indexed_files.json")
 
@@ -47,6 +52,8 @@ if 'show_logs' not in st.session_state:
     st.session_state.show_logs = False
 if 'processing' not in st.session_state:
     st.session_state.processing = False
+if 'llm_responses' not in st.session_state:
+    st.session_state.llm_responses = []
 
 LOG_BUFFER_SIZE = 50
 
@@ -266,7 +273,7 @@ def move_to_processed(file_path):
 def get_chroma_client():
     """Get or create ChromaDB client with proper settings."""
     try:
-        client = chromadb.HttpClient(host="localhost", port=8000)
+        client = chromadb.HttpClient(host=os.getenv("CHROMA_HOST", "localhost"), port=int(os.getenv("CHROMA_PORT", 8000)))
         
         # Test persistent mode
         print("[LOG] Testing persistent mode...")
@@ -606,7 +613,7 @@ with st.sidebar:
                     os.remove(INDEX_LOG)
                 # Also delete ChromaDB collection
                 try:
-                    client = chromadb.HttpClient(host="localhost", port=8000)
+                    client = chromadb.HttpClient(host=os.getenv("CHROMA_HOST", "localhost"), port=int(os.getenv("CHROMA_PORT", 8000)))
                     client.delete_collection("legal_documents")
                 except Exception as e:
                     st.warning(f"Could not delete ChromaDB collection: {e}")
@@ -617,6 +624,7 @@ with st.sidebar:
                 st.session_state.doc_status = {}
                 st.session_state.log_buffer = []
                 st.session_state.show_logs = False
+                st.session_state.llm_responses = []
                 # Force garbage collection
                 gc.collect()
                 st.success("All data reset!")
@@ -702,25 +710,42 @@ if st.button("🔍 Search", type="primary"):
                 
                 if results:
                     st.subheader("Search Results")
-                    # If the query is about claimants, defendants, applicants, or respondents, extract and show a structured list
-                    entity_keywords = ["claimant", "defendant", "applicant", "respondent"]
-                    if any(word in query.lower() for word in entity_keywords):
-                        all_entities = {k: set() for k in entity_keywords}
-                        for result in results:
-                            entities = extract_entities(result['text'], entity_keywords)
-                            for k, v in entities.items():
-                                all_entities[k].update(v)
-                        # Display structured results
-                        found_any = False
-                        for entity_type, names in all_entities.items():
-                            if names:
-                                found_any = True
-                                st.markdown(f"**{entity_type.capitalize()}s found:**")
-                                for name in sorted(names):
-                                    st.write(f"- {name}")
-                        if not found_any:
-                            st.info("No legal entities found in the top results.")
-                    # Also show the raw results as before
+                    # Model-agnostic entity aggregation and display (using model attributes)
+                    aggregated_entities = defaultdict(list)
+                    st.session_state.llm_responses = []  # Clear previous responses
+                    for result in results:
+                        entities = extract_entities(result['text'])
+                        for entity_type in entities.__fields__:
+                            parties = getattr(entities, entity_type)
+                            aggregated_entities[entity_type].extend([
+                                p for p in parties if getattr(p, 'source', None) == 'llm'
+                            ])
+                    
+                    # Display LLM Raw Responses
+                    st.subheader("🤖 LLM Raw Responses")
+                    if st.session_state.llm_responses:
+                        for response in st.session_state.llm_responses:
+                            with st.expander(f"Response for {response['entity_type']}", expanded=True):
+                                st.code(response['content'], language='json')
+                    else:
+                        st.info("No LLM responses available.")
+                    
+                    st.markdown("---")  # Add a separator
+                    
+                    st.subheader("📋 Extracted Legal Entities")
+                    if not any(aggregated_entities.values()):
+                        st.info("No legal entities found in the search results.")
+                    else:
+                        for entity_type, parties in aggregated_entities.items():
+                            if parties:
+                                label = entity_type.replace('_', ' ').capitalize()
+                                st.markdown(f"**{label}:**")
+                                for party in parties:
+                                    role_display = f" ({party.role})" if party.role and party.role.lower() not in entity_type else ""
+                                    st.write(f"• {party.name}{role_display}")
+                    st.markdown("---")  # Add a separator
+                    
+                    # Show the raw results as before
                     for i, result in enumerate(results, 1):
                         relevance = 1 - result['distance']
                         with st.expander(f"Result {i} - {result['source']} (Relevance: {relevance:.1%})", 
