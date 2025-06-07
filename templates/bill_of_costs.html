@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bill of Costs - {{ case.reference }}</title>
+    <style>
+        body {
+            font-family: "Times New Roman", Times, serif;
+            line-height: 1.6;
+            margin: 40px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .case-title {
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #000;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f0f0f0;
+        }
+        .totals {
+            margin-top: 30px;
+            text-align: right;
+        }
+        .footer {
+            margin-top: 50px;
+            text-align: center;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>IN THE {{ case.court }}</h2>
+        <h3>BETWEEN:</h3>
+        <p class="case-title">{{ case.title }}</p>
+        <p>Claim No: {{ case.reference }}</p>
+    </div>
+
+    <h2>BILL OF COSTS</h2>
+    <p>Prepared pursuant to CPR Part 47</p>
+
+    <h3>PROFIT COSTS</h3>
+    {% for grade, items in work_items_by_grade.items() %}
+    <h4>{{ grade }} - £{{ items[0].fee_earner.hourly_rate }}/hr</h4>
+    <table>
+        <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Time</th>
+            <th>Cost</th>
+        </tr>
+        {% for item in items %}
+        <tr>
+            <td>{{ item.date.strftime('%d.%m.%Y') }}</td>
+            <td>{{ item.description }}</td>
+            <td>{{ item.time_spent_units }} units</td>
+            <td>£{{ "%.2f"|format(item.amount) }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endfor %}
+
+    <h3>DISBURSEMENTS</h3>
+    <table>
+        <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Amount</th>
+        </tr>
+        {% for disbursement in disbursements %}
+        <tr>
+            <td>{{ disbursement.date.strftime('%d.%m.%Y') }}</td>
+            <td>{{ disbursement.description }}</td>
+            <td>£{{ "%.2f"|format(disbursement.amount) }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <div class="totals">
+        <p>VAT on Profit Costs (20%): £{{ "%.2f"|format(totals.vat_profit) }}</p>
+        <p>VAT on Disbursements (where applicable): £{{ "%.2f"|format(totals.vat_disbursements) }}</p>
+        <p><strong>GRAND TOTAL: £{{ "%.2f"|format(totals.total) }}</strong></p>
+    </div>
+
+    <div class="footer">
+        <p>Generated on: {{ generated_date }}</p>
+        <p>This bill has been prepared in accordance with CPR Part 47 and relevant Practice Directions</p>
+    </div>
+</body>
+</html> 
