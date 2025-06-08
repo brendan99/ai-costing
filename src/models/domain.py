@@ -286,6 +286,9 @@ class BillItem(BaseModel):
     item_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     date: datetime
     description: str
+    time_spent_units: Optional[int] = None
+    time_spent_decimal_hours: Optional[float] = None
+    hourly_rate_gbp: Optional[float] = None
     amount: float
     is_recoverable: bool = True
 
@@ -295,8 +298,8 @@ class BillSection(BaseModel):
     items: List[BillItem]
 
 class Bill(BaseModel):
-    bill_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    case_id: str
+    bill_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    case_id: uuid.UUID
     case_name: str
     date_generated: datetime
     sections: List[BillSection]

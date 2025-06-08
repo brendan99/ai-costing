@@ -8,6 +8,8 @@ import tempfile
 import logging
 import uuid
 from datetime import datetime, UTC
+from typing import Dict, Any
+import base64
 
 # Add src directory to Python path
 src_path = str(Path(__file__).parent.parent.parent)
@@ -83,6 +85,73 @@ def process_document(processor, file, progress_bar, status_text, index, total_fi
         
     return status
 
+def is_valid_uuid(uuid_str: str) -> bool:
+    """Check if a string is a valid UUID."""
+    try:
+        uuid.UUID(uuid_str)
+        return True
+    except ValueError:
+        return False
+
+def retrieve_case_details(case_id: str) -> Dict[str, Any]:
+    """Retrieve details of an existing case from the database."""
+    if not is_valid_uuid(case_id):
+        st.error("Invalid Case ID format. Please enter a valid UUID.")
+        return None
+        
+    graph_ops = Neo4jGraph()
+    case = graph_ops.get_case(case_id)
+    if not case:
+        st.error(f"Case not found with ID: {case_id}")
+        return None
+    return case
+
+def display_case_details(case_details: Dict[str, Any]):
+    """Display case details in a user-friendly format."""
+    if not case_details:
+        return
+        
+    st.subheader("Case Information")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Case ID:**", case_details.get("case_id"))
+        st.write("**Case Name:**", case_details.get("case_name"))
+        st.write("**Case Type:**", case_details.get("case_type"))
+        st.write("**Status:**", case_details.get("status"))
+    
+    with col2:
+        st.write("**Created:**", case_details.get("created_at"))
+        st.write("**Updated:**", case_details.get("updated_at"))
+        st.write("**Reference:**", case_details.get("case_reference_number"))
+    
+    # Display work items
+    if case_details.get("work_items"):
+        st.subheader("Work Items")
+        for item in case_details["work_items"]:
+            with st.expander(f"{item.get('activity_type', 'Unknown Activity')} - {item.get('date', 'No date')}"):
+                st.write("**Description:**", item.get("description", "No description"))
+                st.write("**Time Spent:**", f"{item.get('time_spent_decimal_hours', 0)} hours")
+                st.write("**Amount:**", f"£{item.get('claimed_amount_gbp', 0):.2f}")
+    
+    # Display disbursements
+    if case_details.get("disbursements"):
+        st.subheader("Disbursements")
+        for disb in case_details["disbursements"]:
+            with st.expander(f"{disb.get('disbursement_type', 'Unknown Type')} - {disb.get('date_incurred', 'No date')}"):
+                st.write("**Description:**", disb.get("description", "No description"))
+                st.write("**Amount:**", f"£{disb.get('amount_gross_gbp', 0):.2f}")
+                st.write("**VAT:**", f"£{disb.get('vat_gbp', 0):.2f}")
+
+def retrieve_case_by_reference(reference: str) -> Dict[str, Any]:
+    """Retrieve details of an existing case from the database using reference number."""
+    graph_ops = Neo4jGraph()
+    case = graph_ops.find_case_by_reference(reference)
+    if not case:
+        st.error(f"Case not found with reference: {reference}")
+        return None
+    return case.model_dump()
+
 def main():
     """Main function to run the Streamlit interface."""
     # Initialize session state
@@ -127,190 +196,97 @@ def main():
         </style>
     """, unsafe_allow_html=True)
 
-    # Title and description
-    st.title("Legal Cost Drafting Assistant")
+    st.title("UK Legal Costing RAG System")
+
+    # Sidebar for document upload
+    st.sidebar.header("Document Upload")
+    uploaded_files = st.sidebar.file_uploader("Upload legal documents", type=["pdf", "txt", "docx", "md"], accept_multiple_files=True)
+    if uploaded_files:
+        st.session_state.uploaded_files = uploaded_files
+
+    # Main content area
+    st.header("Document Processing")
+    if st.session_state.uploaded_files:
+        st.write(f"Uploaded {len(st.session_state.uploaded_files)} files")
+        for file in st.session_state.uploaded_files:
+            st.write(f"- {file.name}")
+
+    # Retrieve existing case details
+    st.header("Retrieve Existing Case")
     st.markdown("""
-        Upload your case documents to extract work items and disbursements.
-        The system will process the documents and create a structured record of all billable items.
-    """)
-
-    # Case reference input
-    st.header("Case Information")
-    case_reference = st.text_input("Case Reference", help="Enter the case reference number")
+        <div class="info-box">
+            Enter either a case reference number or UUID to retrieve case details.
+        </div>
+    """, unsafe_allow_html=True)
     
-    if case_reference:
-        # Check if case exists
-        existing_case = graph_ops.find_case_by_reference(case_reference)
-        if existing_case:
-            st.markdown(f"""
-                <div class="info-box">
-                    Found existing case: {case_reference}<br>
-                    Title: {existing_case.case_name}
-                </div>
-            """, unsafe_allow_html=True)
-            st.session_state.current_case = existing_case
-        else:
-            st.markdown(f"""
-                <div class="info-box">
-                    No case found with reference: {case_reference}<br>
-                    Please create a new case below.
-                </div>
-            """, unsafe_allow_html=True)
-            
-            # Case creation form
-            with st.form("create_case_form"):
-                st.subheader("Create New Case")
-                case_name = st.text_input("Case Name", help="Enter the case name (e.g., Smith v Jones)")
-                
-                if st.form_submit_button("Create Case"):
-                    try:
-                        # Create new case with hardcoded values
-                        new_case = LegalCase(
-                            case_id=uuid.uuid4(),
-                            case_reference_number=case_reference,  # Use the entered reference
-                            case_name=case_name,
-                            our_firm_id=DEFAULT_FIRM_ID,
-                            our_client_party_id=DEFAULT_CLIENT_PARTY_ID,
-                            # Optional fields with defaults
-                            court_claim_number=None,
-                            court_details_id=None,
-                            date_opened=datetime.now(UTC).date(),
-                            date_closed=None,
-                            status="Open",
-                            parties=[],
-                            fee_earners_involved_ids=[],
-                            counsels_instructed_ids=[],
-                            experts_instructed_ids=[],
-                            retainer_details_id=None,
-                            key_dates={},
-                            narrative_summary="Test case for POC",
-                            source_documents=[],
-                            work_items=[],
-                            disbursements=[],
-                            bill_of_costs_ids=[],
-                            schedule_of_costs_ids=[],
-                            precedent_h_ids=[]
-                        )
-                        
-                        # Store case in Neo4j
-                        case_id = graph_ops.create_case(new_case)
-                        st.markdown(f"""
-                            <div class="success-box">
-                                Successfully created case: {case_reference}<br>
-                                Title: {case_name}
-                            </div>
-                        """, unsafe_allow_html=True)
-                        st.session_state.current_case = new_case
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.markdown(f"""
-                            <div class="error-box">
-                                Error creating case: {str(e)}
-                            </div>
-                        """, unsafe_allow_html=True)
-
-    # File upload section - only show if we have a current case
-    if st.session_state.current_case:
-        st.header("Document Upload")
-        uploaded_files = st.file_uploader(
-            "Upload your documents",
-            type=['pdf', 'docx', 'txt', 'eml'],
-            accept_multiple_files=True
-        )
-
-        # Create a container for logs
-        log_container = st.empty()
-        # Set up logging to Streamlit
-        handler = StreamlitHandler(log_container)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger = logging.getLogger()
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-
-        # Process documents button
-        if uploaded_files and st.button("Process Documents"):
-            total_files = len(uploaded_files)
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i, uploaded_file in enumerate(uploaded_files):
-                try:
-                    # Save uploaded file to temporary location
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                        tmp_file.write(uploaded_file.getvalue())
-                        tmp_path = tmp_file.name
-                    
-                    # Update status
-                    status_text.text(f"Processing {uploaded_file.name}...")
-                    logger.info(f"Starting processing of {uploaded_file.name}")
-                    
-                    # Process document with status updates
-                    def update_status(message):
-                        status_text.text(f"Processing {uploaded_file.name}... {message}")
-                        logger.info(f"{uploaded_file.name}: {message}")
-                    
-                    result = processor.process_document(tmp_path, legal_case=st.session_state.current_case, status_callback=update_status)
-                    
-                    # Update progress
-                    progress = (i + 1) / total_files
-                    progress_bar.progress(progress)
-                    
-                    # Show success message
-                    st.markdown(f"""
-                        <div class="success-box">
-                            Successfully processed {uploaded_file.name}<br>
-                            Found {len(result['work_items'])} work items and {len(result['disbursements'])} disbursements
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Clean up temporary file
-                    os.unlink(tmp_path)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing {uploaded_file.name}: {str(e)}", exc_info=True)
-                    st.markdown(f"""
-                        <div class="error-box">
-                            Error processing {uploaded_file.name}: {str(e)}
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.session_state.failed_files.append(uploaded_file.name)
-            
-            # Show final status
-            if st.session_state.failed_files:
-                st.markdown(f"""
-                    <div class="error-box">
-                        Failed to process {len(st.session_state.failed_files)} files:<br>
-                        {', '.join(st.session_state.failed_files)}
-                    </div>
-                """, unsafe_allow_html=True)
+    # Create two columns for input methods
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        case_reference = st.text_input("Enter Case Reference Number", 
+                                     help="Enter the reference number of the case you want to retrieve")
+        if case_reference:
+            case_details = retrieve_case_by_reference(case_reference)
+            if case_details:
+                display_case_details(case_details)
+                st.session_state.current_case = case_details
+    
+    with col2:
+        case_id = st.text_input("Enter Case ID (UUID)", 
+                               help="Enter the UUID of the case you want to retrieve")
+        if case_id:
+            if is_valid_uuid(case_id):
+                case_details = retrieve_case_details(case_id)
+                if case_details:
+                    display_case_details(case_details)
+                    st.session_state.current_case = case_details
             else:
-                st.markdown("""
-                    <div class="success-box">
-                        All documents processed successfully!
-                    </div>
-                """, unsafe_allow_html=True)
+                st.error("Please enter a valid UUID in the format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
 
-        # Generate Bill section
-        st.header("Generate Bill")
-        if st.button("Generate Bill"):
+    # Generate bill button and download button side by side
+    bill_generated = False
+    bill_html = None
+    bill_path = None
+    if st.session_state.get('current_case'):
+        colA, colB = st.columns([1,1])
+        with colA:
+            generate_clicked = st.button("Generate Bill")
+        with colB:
+            # Placeholder for download button, will be enabled after bill is generated
+            download_placeholder = st.empty()
+    else:
+        generate_clicked = st.button("Generate Bill")
+        download_placeholder = st.empty()
+
+    if generate_clicked and st.session_state.current_case:
+        with st.spinner("Generating bill..."):
             try:
-                with st.spinner("Generating bill..."):
-                    bill = bill_generator.generate_bill(st.session_state.current_case.case_id)
-                    st.markdown(f"""
-                        <div class="success-box">
-                            Bill generated successfully!<br>
-                            Total work items: {len(bill.work_items)}<br>
-                            Total disbursements: {len(bill.disbursements)}<br>
-                            Total amount: £{bill.total_amount:.2f}
-                        </div>
-                    """, unsafe_allow_html=True)
+                bill = bill_generator.generate_bill(st.session_state.current_case["case_id"])
+                st.success(f"Bill generated successfully. Total amount: £{bill.total_amount:.2f}, Recoverable: £{bill.recoverable_amount:.2f}")
+                bill_path = bill_generator.save_bill(bill)
+                with open(bill_path, 'r', encoding='utf-8') as f:
+                    bill_html = f.read()
+                bill_generated = True
             except Exception as e:
-                st.markdown(f"""
-                    <div class="error-box">
-                        Error generating bill: {str(e)}
-                    </div>
-                """, unsafe_allow_html=True)
+                st.error(f"Error generating bill: {str(e)}")
+
+    # Show download button if bill was generated
+    if bill_generated and bill_html and bill_path:
+        download_placeholder.download_button(
+            label="Download Bill of Costs",
+            data=bill_html,
+            file_name=os.path.basename(bill_path),
+            mime="text/html"
+        )
+        # Full-width preview below
+        st.markdown("---")
+        st.markdown("### Bill Preview")
+        st.components.v1.iframe(
+            f"data:text/html;base64,{base64.b64encode(bill_html.encode()).decode()}",
+            height=900,
+            width=None,
+            scrolling=True
+        )
 
 if __name__ == "__main__":
     main() 
