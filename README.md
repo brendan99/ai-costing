@@ -59,29 +59,32 @@ ai-costing-graph/
 └── scripts/            # Utility scripts
 ```
 
+## Latest RAG Workflow
+
+The latest RAG workflow includes the following steps:
+
+1. **Document Upload**:  
+   Upload legal documents using the sidebar uploader. Supported formats include PDF, TXT, DOCX, and MD.
+
+2. **Document Processing**:  
+   - Documents are automatically processed and indexed.
+   - Smart chunking with overlap preservation is applied.
+   - Metadata extraction and preservation are performed.
+
+3. **Vector Search**:  
+   - Semantic search using BGE embeddings is utilized.
+   - Results show relevant document chunks with source documents and relevance scores.
+
+4. **Disbursement Creation**:  
+   - Disbursements are created and stored in a Neo4j database.
+   - A duplicate ID check is implemented to prevent errors during creation.
+   - Logging is added to track the creation process and any potential issues.
+
+5. **Resource Management**:  
+   - Memory usage monitoring and automatic garbage collection are implemented.
+   - Efficient storage management is ensured.
+
 ## Usage
 
 1. Start Ollama:
-   ```bash
-   ollama serve
    ```
-
-2. Run the document ingestion pipeline:
-   ```bash
-   python -m src.scripts.ingest_documents
-   ```
-
-3. Generate a document:
-   ```bash
-   python -m src.scripts.generate_document
-   ```
-
-## Development
-
-- Run tests: `pytest`
-- Run linting: `ruff check .`
-- Format code: `ruff format .`
-
-## License
-
-MIT 
