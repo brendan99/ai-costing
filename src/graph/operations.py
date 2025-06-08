@@ -158,55 +158,53 @@ class Neo4jGraph:
         result = tx.run(query, {"case_id": case_id, **fee_earner_data})
         return result.single()[0]
 
-    def get_case(self, case_id: str) -> LegalCase:
-        """Get a case by ID."""
-        with self.driver.session() as session:
-            result = session.run(
-                """
-                MATCH (c:Case {case_id: $case_id})
-                OPTIONAL MATCH (c)-[:HAS_WORK_ITEM]->(w:WorkItem)
-                OPTIONAL MATCH (w)-[:PERFORMED_BY]->(f:FeeEarner)
-                OPTIONAL MATCH (c)-[:HAS_DISBURSEMENT]->(d:Disbursement)
-                RETURN c, collect(distinct w) as work_items, 
-                       collect(distinct f) as fee_earners,
-                       collect(distinct d) as disbursements
-                """,
-                case_id=str(case_id)
-            )
-            record = result.single()
-            if not record:
-                return None
+    def get_case(self, case_id: str) -> Optional[LegalCase]:
+        """Get a case by its ID."""
+        try:
+            # Convert string UUID to UUID object if needed
+            if isinstance(case_id, str):
+                try:
+                    case_id = str(uuid.UUID(case_id))  # Convert to UUID and back to string to validate
+                except ValueError:
+                    logger.warning(f"Invalid UUID format: {case_id}")
+                    return None
             
-            case_node = record["c"]
-            work_items = [w for w in record["work_items"] if w is not None]
-            fee_earners = [f for f in record["fee_earners"] if f is not None]
-            disbursements = [d for d in record["disbursements"] if d is not None]
-            
-            # Convert Neo4j DateTime to Python datetime
-            case_data = dict(case_node)
-            case_data["created_at"] = case_data["created_at"].to_native()
-            case_data["updated_at"] = case_data["updated_at"].to_native()
-            
-            # Convert work item dates
-            for work_item in work_items:
-                work_item["date"] = work_item["date"].to_native()
-            
-            # Convert disbursement dates
-            for disbursement in disbursements:
-                disbursement["date"] = disbursement["date"].to_native()
-            
-            # Create Case model with converted dates
-            return LegalCase(
-                case_id=case_data["case_id"],
-                title=case_data["title"],
-                reference=case_data["reference"],
-                court=case_data["court"],
-                created_at=case_data["created_at"],
-                updated_at=case_data["updated_at"],
-                work_items=[WorkItem(**dict(w)) for w in work_items],
-                fee_earners=[FeeEarner(**dict(f)) for f in fee_earners],
-                disbursements=[Disbursement(**dict(d)) for d in disbursements]
-            )
+            query = """
+            MATCH (c:Case {case_id: $case_id})
+            RETURN c.case_id as case_id,
+                   c.case_name as case_name,
+                   c.case_type as case_type,
+                   c.status as status,
+                   c.case_reference_number as case_reference_number,
+                   c.created_at as created_at,
+                   c.updated_at as updated_at,
+                   c.our_firm_id as our_firm_id,
+                   c.our_client_party_id as our_client_party_id
+            """
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, {"case_id": case_id})
+                case_data = result.single()
+                
+                if not case_data:
+                    logger.warning(f"No case found with ID: {case_id}")
+                    return None
+                    
+                # Convert Neo4j datetime to Python datetime if present
+                if case_data.get("created_at"):
+                    case_data["created_at"] = case_data["created_at"].to_native()
+                if case_data.get("updated_at"):
+                    case_data["updated_at"] = case_data["updated_at"].to_native()
+                
+                # Ensure required fields have default values if not present
+                if not case_data.get("our_firm_id"):
+                    case_data["our_firm_id"] = "00000000-0000-0000-0000-000000000001"  # Default firm ID
+                if not case_data.get("our_client_party_id"):
+                    case_data["our_client_party_id"] = "00000000-0000-0000-0000-000000000002"  # Default client party ID
+                    
+                return LegalCase(**case_data)
+        except Exception as e:
+            logger.error(f"Error getting case: {str(e)}")
+            return None
 
     def create_document_chunk(self, chunk: DocumentChunk, case: LegalCase):
         """Create a document chunk node and link it to its case."""
@@ -388,6 +386,9 @@ class Neo4jGraph:
             self.run_query("CREATE CONSTRAINT constraint_work_item_id IF NOT EXISTS FOR (w:WorkItem) REQUIRE w.work_item_id IS UNIQUE")
             self.run_query("CREATE CONSTRAINT constraint_disbursement_id IF NOT EXISTS FOR (d:Disbursement) REQUIRE d.disbursement_id IS UNIQUE")
             self.run_query("CREATE CONSTRAINT constraint_fee_earner_id IF NOT EXISTS FOR (f:FeeEarner) REQUIRE f.fee_earner_id IS UNIQUE")
+            
+            # Create index for case reference number
+            self.run_query("CREATE INDEX case_reference_index IF NOT EXISTS FOR (c:Case) ON (c.case_reference_number)")
             
             logger.info("Database initialized successfully")
         except Exception as e:
@@ -607,22 +608,42 @@ class Neo4jGraph:
 
     def find_case_by_reference(self, reference: str) -> Optional[LegalCase]:
         """Find a case by its reference number."""
-        with self.driver.session() as session:
-            result = session.run(
-                """
-                MATCH (c:Case)
-                WHERE c.reference = $reference
-                RETURN c
-                """,
-                reference=reference
-            )
-            record = result.single()
-            if record:
-                case_data = dict(record["c"])
-                # Convert Neo4j DateTime to Python datetime
-                case_data["created_at"] = case_data["created_at"].to_native()
-                case_data["updated_at"] = case_data["updated_at"].to_native()
+        query = """
+        MATCH (c:Case {case_reference_number: $reference})
+        RETURN c.case_id as case_id,
+               c.case_name as case_name,
+               c.case_type as case_type,
+               c.status as status,
+               c.case_reference_number as case_reference_number,
+               c.created_at as created_at,
+               c.updated_at as updated_at,
+               c.our_firm_id as our_firm_id,
+               c.our_client_party_id as our_client_party_id
+        """
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, {"reference": reference})
+                case_data = result.single()
+                
+                if not case_data:
+                    logger.warning(f"No case found with reference: {reference}")
+                    return None
+                    
+                # Convert Neo4j datetime to Python datetime if present
+                if case_data.get("created_at"):
+                    case_data["created_at"] = case_data["created_at"].to_native()
+                if case_data.get("updated_at"):
+                    case_data["updated_at"] = case_data["updated_at"].to_native()
+                
+                # Ensure required fields have default values if not present
+                if not case_data.get("our_firm_id"):
+                    case_data["our_firm_id"] = "00000000-0000-0000-0000-000000000001"  # Default firm ID
+                if not case_data.get("our_client_party_id"):
+                    case_data["our_client_party_id"] = "00000000-0000-0000-0000-000000000002"  # Default client party ID
+                    
                 return LegalCase(**case_data)
+        except Exception as e:
+            logger.error(f"Error finding case by reference: {str(e)}")
             return None
 
     def check_db_state(self):
@@ -673,4 +694,114 @@ class Neo4jGraph:
                 }
         except Exception as e:
             logger.error(f"Error checking database state: {str(e)}")
-            raise 
+            raise
+
+    def get_work_items(self, case_id: str) -> List[WorkItem]:
+        """Get all work items for a case."""
+        try:
+            query = """
+            MATCH (c:Case {case_id: $case_id})-[:HAS_WORK_ITEM]->(w:WorkItem)
+            RETURN w.work_item_id as work_item_id,
+                   w.case_id as case_id,
+                   w.fee_earner_id as fee_earner_id,
+                   w.date_of_work as date_of_work,
+                   w.activity_type as activity_type,
+                   w.description as description,
+                   w.time_spent_units as time_spent_units,
+                   w.time_spent_decimal_hours as time_spent_decimal_hours,
+                   w.applicable_hourly_rate_gbp as applicable_hourly_rate_gbp,
+                   w.claimed_amount_gbp as claimed_amount_gbp,
+                   w.is_recoverable as is_recoverable,
+                   w.related_document_ids as related_document_ids,
+                   w.source_reference as source_reference,
+                   w.bill_item_number as bill_item_number,
+                   w.disputed as disputed,
+                   w.dispute_reason as dispute_reason
+            """
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, {"case_id": str(case_id)})
+                work_items = []
+                for record in result:
+                    # Convert Neo4j record to dictionary
+                    item_dict = dict(record)
+                    
+                    # Convert Neo4j date to Python date
+                    if item_dict.get("date_of_work"):
+                        item_dict["date_of_work"] = item_dict["date_of_work"].to_native()
+                    
+                    # Convert string UUIDs to UUID objects
+                    if item_dict.get("work_item_id"):
+                        item_dict["work_item_id"] = uuid.UUID(item_dict["work_item_id"])
+                    if item_dict.get("case_id"):
+                        item_dict["case_id"] = uuid.UUID(item_dict["case_id"])
+                    if item_dict.get("fee_earner_id"):
+                        item_dict["fee_earner_id"] = uuid.UUID(item_dict["fee_earner_id"])
+                    if item_dict.get("related_document_ids"):
+                        item_dict["related_document_ids"] = [uuid.UUID(doc_id) for doc_id in item_dict["related_document_ids"]]
+                    
+                    # Set default values for missing fields
+                    item_dict.setdefault("time_spent_units", 0)
+                    item_dict.setdefault("time_spent_decimal_hours", 0.0)
+                    item_dict.setdefault("applicable_hourly_rate_gbp", 0.0)
+                    item_dict.setdefault("claimed_amount_gbp", 0.0)
+                    item_dict.setdefault("is_recoverable", True)
+                    item_dict.setdefault("related_document_ids", [])
+                    item_dict.setdefault("disputed", False)
+                    
+                    work_items.append(WorkItem(**item_dict))
+                return work_items
+        except Exception as e:
+            logger.error(f"Error getting work items: {str(e)}")
+            return []
+
+    def get_disbursements(self, case_id: str) -> List[Disbursement]:
+        """Get all disbursements for a case."""
+        try:
+            query = """
+            MATCH (c:Case {case_id: $case_id})-[:HAS_DISBURSEMENT]->(d:Disbursement)
+            RETURN d.disbursement_id as disbursement_id,
+                   d.case_id as case_id,
+                   d.date_incurred as date_incurred,
+                   d.disbursement_type as disbursement_type,
+                   d.description as description,
+                   d.payee_name as payee_name,
+                   d.amount_net_gbp as amount_net_gbp,
+                   d.vat_gbp as vat_gbp,
+                   d.amount_gross_gbp as amount_gross_gbp,
+                   d.is_recoverable as is_recoverable,
+                   d.voucher_document_id as voucher_document_id,
+                   d.bill_item_number as bill_item_number,
+                   d.disputed as disputed,
+                   d.dispute_reason as dispute_reason
+            """
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, {"case_id": str(case_id)})
+                disbursements = []
+                for record in result:
+                    # Convert Neo4j record to dictionary
+                    item_dict = dict(record)
+                    
+                    # Convert Neo4j date to Python date
+                    if item_dict.get("date_incurred"):
+                        item_dict["date_incurred"] = item_dict["date_incurred"].to_native()
+                    
+                    # Convert string UUIDs to UUID objects
+                    if item_dict.get("disbursement_id"):
+                        item_dict["disbursement_id"] = uuid.UUID(item_dict["disbursement_id"])
+                    if item_dict.get("case_id"):
+                        item_dict["case_id"] = uuid.UUID(item_dict["case_id"])
+                    if item_dict.get("voucher_document_id"):
+                        item_dict["voucher_document_id"] = uuid.UUID(item_dict["voucher_document_id"])
+                    
+                    # Set default values for missing fields
+                    item_dict.setdefault("amount_net_gbp", 0.0)
+                    item_dict.setdefault("vat_gbp", 0.0)
+                    item_dict.setdefault("amount_gross_gbp", 0.0)
+                    item_dict.setdefault("is_recoverable", True)
+                    item_dict.setdefault("disputed", False)
+                    
+                    disbursements.append(Disbursement(**item_dict))
+                return disbursements
+        except Exception as e:
+            logger.error(f"Error getting disbursements: {str(e)}")
+            return [] 

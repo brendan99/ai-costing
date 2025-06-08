@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>Bill of Costs - {{ case.reference }}</title>
     <style>
         body {
@@ -51,47 +52,98 @@
     <h2>BILL OF COSTS</h2>
     <p>Prepared pursuant to CPR Part 47</p>
 
-    <h3>PROFIT COSTS</h3>
-    {% for grade, items in work_items_by_grade.items() %}
-    <h4>{{ grade }} - £{{ items[0].fee_earner.hourly_rate }}/hr</h4>
-    <table>
-        <tr>
-            <th>Date</th>
-            <th>Description</th>
-            <th>Time</th>
-            <th>Cost</th>
-        </tr>
-        {% for item in items %}
-        <tr>
-            <td>{{ item.date.strftime('%d.%m.%Y') }}</td>
-            <td>{{ item.description }}</td>
-            <td>{{ item.time_spent_units }} units</td>
-            <td>£{{ "%.2f"|format(item.amount) }}</td>
-        </tr>
+    <!-- Work Items Section -->
+    <div class="section">
+        <h3>Work Done</h3>
+        {% for grade, items in work_items_by_grade.items() %}
+        <div class="grade-section">
+            <h4>{{ grade }}</h4>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th>Time</th>
+                        <th>Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in items %}
+                    <tr>
+                        <td>{{ item.date.strftime('%d.%m.%Y') }}</td>
+                        <td>{{ item.description }}</td>
+                        <td>
+                            {% if item.time_spent_decimal_hours %}
+                                {{ "%.2f"|format(item.time_spent_decimal_hours) }} hrs
+                                {% if item.hourly_rate_gbp %}
+                                    @ £{{ "%.2f"|format(item.hourly_rate_gbp) }}/hr
+                                {% endif %}
+                            {% elif item.time_spent_units %}
+                                {{ item.time_spent_units }} units
+                            {% endif %}
+                        </td>
+                        <td>£{{ "%.2f"|format(item.amount) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
         {% endfor %}
-    </table>
-    {% endfor %}
+    </div>
 
-    <h3>DISBURSEMENTS</h3>
-    <table>
-        <tr>
-            <th>Date</th>
-            <th>Description</th>
-            <th>Amount</th>
-        </tr>
-        {% for disbursement in disbursements %}
-        <tr>
-            <td>{{ disbursement.date.strftime('%d.%m.%Y') }}</td>
-            <td>{{ disbursement.description }}</td>
-            <td>£{{ "%.2f"|format(disbursement.amount) }}</td>
-        </tr>
+    <!-- Disbursements Section -->
+    <div class="section">
+        <h3>Disbursements</h3>
+        {% for type, items in disbursements_by_type.items() %}
+        <div class="disbursement-section">
+            <h4>{{ type }}</h4>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in items %}
+                    <tr>
+                        <td>{{ item.date.strftime('%d.%m.%Y') }}</td>
+                        <td>{{ item.description }}</td>
+                        <td>£{{ "%.2f"|format(item.amount) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
         {% endfor %}
-    </table>
+    </div>
 
-    <div class="totals">
-        <p>VAT on Profit Costs (20%): £{{ "%.2f"|format(totals.vat_profit) }}</p>
-        <p>VAT on Disbursements (where applicable): £{{ "%.2f"|format(totals.vat_disbursements) }}</p>
-        <p><strong>GRAND TOTAL: £{{ "%.2f"|format(totals.total) }}</strong></p>
+    <!-- Totals Section -->
+    <div class="section totals">
+        <h3>Summary of Costs</h3>
+        <table>
+            <tr>
+                <td>Profit Costs</td>
+                <td>£{{ "%.2f"|format(profit_costs) }}</td>
+            </tr>
+            <tr>
+                <td>VAT on Profit Costs</td>
+                <td>£{{ "%.2f"|format(vat_on_profit_costs) }}</td>
+            </tr>
+            <tr>
+                <td>Disbursements</td>
+                <td>£{{ "%.2f"|format(disbursements) }}</td>
+            </tr>
+            <tr>
+                <td>VAT on Disbursements</td>
+                <td>£{{ "%.2f"|format(vat_on_disbursements) }}</td>
+            </tr>
+            <tr class="total">
+                <td>Total</td>
+                <td>£{{ "%.2f"|format(grand_total) }}</td>
+            </tr>
+        </table>
     </div>
 
     <div class="footer">
