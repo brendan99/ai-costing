@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 
-from ..models.domain import Case, DocumentType, DocumentChunk
+from ..models.domain import LegalCase, DocumentType, DocumentChunk
 from ..llm.operations import LLMOperations
 from ..graph.operations import Neo4jGraph
 
@@ -25,7 +25,7 @@ class DocumentGenerator:
         # 3. Generate document using LLM
         return self.llm_ops.generate_document(case, doc_type)
 
-    def _get_relevant_chunks(self, case: Case, doc_type: DocumentType) -> List[DocumentChunk]:
+    def _get_relevant_chunks(self, case: LegalCase, doc_type: DocumentType) -> List[DocumentChunk]:
         """Get relevant document chunks based on document type."""
         # Construct query based on document type
         if doc_type == DocumentType.BILL_OF_COSTS:
@@ -43,7 +43,7 @@ class DocumentGenerator:
         # Search for similar chunks
         return self.graph.search_similar_chunks(query_embedding, limit=5)
 
-    def save_document(self, content: str, case: Case, doc_type: DocumentType) -> str:
+    def save_document(self, content: str, case: LegalCase, doc_type: DocumentType) -> str:
         """Save generated document to file."""
         # Create output directory if it doesn't exist
         output_dir = Path("output") / case.reference

@@ -20,7 +20,7 @@ src_path = str(Path(__file__).parent.parent)
 if src_path not in sys.path:
     sys.path.append(src_path)
 
-from src.models.domain import Case, WorkItem, FeeEarner, DocumentType
+from src.models.domain import LegalCase, WorkItem, FeeEarner, DocumentType
 from src.graph.operations import Neo4jGraph
 from src.document.processor import DocumentProcessor
 from src.generation.generator import DocumentGenerator
@@ -75,7 +75,7 @@ def create_sample_case():
         )
     ]
     
-    return Case(
+    return LegalCase(
         id=case_id,
         reference="EXAMPLE001",
         title="Smith v Jones",

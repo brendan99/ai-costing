@@ -13,7 +13,7 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.append(src_path)
 
-from src.models.domain import Case
+from src.models.domain import LegalCase
 from src.document.processor import DocumentProcessor
 from src.graph.operations import Neo4jGraph
 
@@ -33,22 +33,17 @@ def ingest(
         # Initialize components
         graph = Neo4jGraph()
         graph.connect()
-        processor = DocumentProcessor()
+        processor = DocumentProcessor(graph)
 
-        # Create case
-        case = Case(
-            id=str(uuid.uuid4()),
-            reference=case_reference,
-            title=case_title,
-            court=court,
-            description=description,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
-
-        # Store case in Neo4j
-        case_id = graph.create_case(case)
-        console.print(f"[green]Created case: {case_reference}[/green]")
+        # Check if case exists
+        existing_case = graph.find_case_by_reference(case_reference)
+        if existing_case:
+            console.print(f"[yellow]Found existing case: {case_reference}[/yellow]")
+            case = existing_case
+        else:
+            console.print(f"[red]No case found with reference: {case_reference}[/red]")
+            console.print("Please create the case first using the UI or case management system.")
+            raise typer.Exit(1)
 
         # Process documents
         with Progress() as progress:

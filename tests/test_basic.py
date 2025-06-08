@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 import uuid
 
-from src.models.domain import Case, WorkItem, FeeEarner, DocumentType
+from src.models.domain import LegalCase, WorkItem, FeeEarner, DocumentType
 from src.graph.operations import Neo4jGraph
 from src.llm.operations import LLMOperations
 from src.document.processor import DocumentProcessor
@@ -30,7 +30,7 @@ def test_case():
         category="Pre-action"
     )
     
-    return Case(
+    return LegalCase(
         id=case_id,
         reference="TEST001",
         title="Test Case",

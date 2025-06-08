@@ -15,8 +15,9 @@ from langchain_community.embeddings import OllamaEmbeddings
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain_core.output_parsers import StrOutputParser
+import json
 
-from ..models.domain import Case, DocumentType
+from ..models.domain import LegalCase, DocumentType, ActivityType, DisbursementType
 
 load_dotenv()
 
@@ -51,46 +52,119 @@ class LLMOperations:
     def extract_entities(self, text: str) -> Dict[str, Any]:
         """Extract entities from text using LLM."""
         prompt = PromptTemplate(
-            input_variables=["text"],
+            input_variables=["text", "activity_types", "disbursement_types"],
             template="""
-            Extract the following information from the text:
+            You are a legal cost draftsman specializing in UK litigation. Extract the following information from the text:
+            
+            Case Information:
             - Case Reference (if found)
             - Case Title
             - Court Name
             - Brief Description
             
-            If any information is not found, use reasonable defaults.
+            Work Items (if any):
+            For each work item, extract:
+            - date_of_work (YYYY-MM-DD)
+            - fee_earner_name
+            - fee_earner_grade (if available)
+            - activity_type (must be one of: {activity_types})
+            - description
+            - time_spent_units (1 unit = 6 minutes)
+            - time_spent_decimal_hours
+            - applicable_hourly_rate_gbp (if available)
+            - claimed_amount_gbp (if available)
+            - is_recoverable (true/false)
+            - related_document (if available)
+            
+            Disbursements (if any):
+            For each disbursement, extract:
+            - date_incurred (YYYY-MM-DD)
+            - disbursement_type (must be one of: {disbursement_types})
+            - description
+            - payee_name
+            - amount_net_gbp
+            - vat_gbp
+            - amount_gross_gbp
+            - is_recoverable (true/false)
+            - voucher_document (if available)
             
             Text:
             {text}
             
-            Return the information in this format:
-            Case Reference: [reference]
-            Title: [title]
-            Court: [court]
-            Description: [description]
+            Return the information in JSON format with the following structure:
+            {{
+                "case_info": {{
+                    "reference": "string",
+                    "title": "string",
+                    "court": "string",
+                    "description": "string"
+                }},
+                "work_items": [
+                    {{
+                        "date_of_work": "YYYY-MM-DD",
+                        "fee_earner_name": "string",
+                        "fee_earner_grade": "string",
+                        "activity_type": "string",
+                        "description": "string",
+                        "time_spent_units": number,
+                        "time_spent_decimal_hours": number,
+                        "applicable_hourly_rate_gbp": number,
+                        "claimed_amount_gbp": number,
+                        "is_recoverable": boolean,
+                        "related_document": "string"
+                    }}
+                ],
+                "disbursements": [
+                    {{
+                        "date_incurred": "YYYY-MM-DD",
+                        "disbursement_type": "string",
+                        "description": "string",
+                        "payee_name": "string",
+                        "amount_net_gbp": number,
+                        "vat_gbp": number,
+                        "amount_gross_gbp": number,
+                        "is_recoverable": boolean,
+                        "voucher_document": "string"
+                    }}
+                ]
+            }}
             """
         )
         
-        chain = prompt | self.llm
+        # Get valid enum values
+        activity_types = [t.value for t in ActivityType]
+        disbursement_types = [t.value for t in DisbursementType]
         
-        result = chain.invoke({"text": text})
+        chain = prompt | self.llm | StrOutputParser()
         
-        # Parse the result
-        lines = result.strip().split('\n')
-        entities = {}
-        for line in lines:
-            if ':' in line:
-                key, value = line.split(':', 1)
-                entities[key.strip()] = value.strip()
-        
-        return entities
+        try:
+            result = chain.invoke({
+                "text": text,
+                "activity_types": ", ".join(activity_types),
+                "disbursement_types": ", ".join(disbursement_types)
+            })
+            return json.loads(result)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing LLM response: {e}")
+            print(f"Raw response: {result}")
+            return {
+                "case_info": {},
+                "work_items": [],
+                "disbursements": []
+            }
+        except Exception as e:
+            print(f"Error in entity extraction: {e}")
+            return {
+                "case_info": {},
+                "work_items": [],
+                "disbursements": []
+            }
 
     def get_embedding(self, text: str) -> List[float]:
         """Get embedding for a text string."""
         return self.embeddings.embed_query(text)
 
-    def generate_document(self, case: Case, doc_type: DocumentType) -> str:
+    def generate_document(self, case: LegalCase, doc_type: DocumentType) -> str:
         """Generate a legal document using LLM."""
         # Construct prompt based on document type
         if doc_type == DocumentType.BILL_OF_COSTS:

@@ -4,6 +4,10 @@ import sys
 from pathlib import Path
 import streamlit as st
 from rich.console import Console
+import tempfile
+import logging
+import uuid
+from datetime import datetime, UTC
 
 # Add src directory to Python path
 src_path = str(Path(__file__).parent.parent.parent)
@@ -14,8 +18,26 @@ if src_path not in sys.path:
 from src.document_processing.processor import DocumentProcessor
 from src.generation.bill_generator import BillGenerator
 from src.graph.operations import Neo4jGraph
+from src.models.domain import LegalCase
+from src.config import DEFAULT_FIRM_ID, DEFAULT_CLIENT_PARTY_ID
 
 console = Console()
+
+# Configure logging to capture in Streamlit
+class StreamlitHandler(logging.Handler):
+    def __init__(self, container):
+        super().__init__()
+        self.container = container
+        self.logs = []
+        
+    def emit(self, record):
+        log_entry = self.format(record)
+        self.logs.append(log_entry)
+        # Keep only last 1000 logs
+        if len(self.logs) > 1000:
+            self.logs = self.logs[-1000:]
+        # Update the container
+        self.container.text_area("Processing Logs", "\n".join(self.logs), height=300)
 
 def init_session_state():
     """Initialize session state variables."""
@@ -25,19 +47,24 @@ def init_session_state():
         st.session_state.processing_status = {}
     if 'failed_files' not in st.session_state:
         st.session_state.failed_files = []
+    if 'is_processing' not in st.session_state:
+        st.session_state.is_processing = False
+    if 'overall_progress' not in st.session_state:
+        st.session_state.overall_progress = 0
 
 def process_document(processor, file, progress_bar, status_text, index, total_files):
     """Process a single document and return its status."""
     try:
-        status_text.text(f"Processing {file.name}...")
+        def update_status(message):
+            status_text.text(f"Processing {file.name}... {message}")
         
         # Save uploaded file temporarily
         file_path = Path(file.name)
         with open(file_path, "wb") as f:
             f.write(file.getbuffer())
         
-        # Process document
-        processor.process_document(str(file_path))
+        # Process document with status updates
+        processor.process_document(str(file_path), status_callback=update_status)
         status = "success"
         
     except ValueError as e:
@@ -50,215 +77,240 @@ def process_document(processor, file, progress_bar, status_text, index, total_fi
             os.remove(file_path)
         
         # Update progress
-        progress_bar.progress((index + 1) / total_files)
+        progress = (index + 1) / total_files
+        st.session_state.overall_progress = progress
+        progress_bar.progress(progress)
         
     return status
 
 def main():
-    st.set_page_config(
-        page_title="Legal Cost Management System",
-        page_icon="⚖️",
-        layout="wide"
-    )
-    
+    """Main function to run the Streamlit interface."""
     # Initialize session state
-    init_session_state()
-    
+    if 'uploaded_files' not in st.session_state:
+        st.session_state.uploaded_files = []
+    if 'processing_status' not in st.session_state:
+        st.session_state.processing_status = {}
+    if 'failed_files' not in st.session_state:
+        st.session_state.failed_files = []
+    if 'current_case' not in st.session_state:
+        st.session_state.current_case = None
+
     # Initialize components
-    processor = DocumentProcessor()
-    bill_generator = BillGenerator()
-    graph = Neo4jGraph()
-    
+    graph_ops = Neo4jGraph()
+    processor = DocumentProcessor(graph_ops)
+    bill_generator = BillGenerator(graph_ops)
+
     # Custom CSS
     st.markdown("""
         <style>
-        .main {
-            padding: 2rem;
-        }
-        .stButton>button {
-            width: 100%;
-            margin-top: 1rem;
-        }
         .success-box {
-            padding: 1rem;
-            border-radius: 0.5rem;
             background-color: #d4edda;
             color: #155724;
-            margin: 1rem 0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
         }
         .error-box {
-            padding: 1rem;
-            border-radius: 0.5rem;
             background-color: #f8d7da;
             color: #721c24;
-            margin: 1rem 0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
         }
         .info-box {
-            padding: 1rem;
-            border-radius: 0.5rem;
             background-color: #cce5ff;
             color: #004085;
-            margin: 1rem 0;
-        }
-        .reprocess-button {
-            background-color: #ffc107;
-            color: #000;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
         }
         </style>
     """, unsafe_allow_html=True)
+
+    # Title and description
+    st.title("Legal Cost Drafting Assistant")
+    st.markdown("""
+        Upload your case documents to extract work items and disbursements.
+        The system will process the documents and create a structured record of all billable items.
+    """)
+
+    # Case reference input
+    st.header("Case Information")
+    case_reference = st.text_input("Case Reference", help="Enter the case reference number")
     
-    # Sidebar for navigation
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Choose a page", ["Document Upload", "Generate Bill"])
-    
-    if page == "Document Upload":
-        st.title("📄 Document Upload")
-        st.markdown("""
-        Upload legal documents (PDF, DOCX, emails, TXT) to ingest them into the system. 
-        Case information will be automatically extracted from the documents.
-        """)
-        
-        # File uploader with drag and drop
+    if case_reference:
+        # Check if case exists
+        existing_case = graph_ops.find_case_by_reference(case_reference)
+        if existing_case:
+            st.markdown(f"""
+                <div class="info-box">
+                    Found existing case: {case_reference}<br>
+                    Title: {existing_case.case_name}
+                </div>
+            """, unsafe_allow_html=True)
+            st.session_state.current_case = existing_case
+        else:
+            st.markdown(f"""
+                <div class="info-box">
+                    No case found with reference: {case_reference}<br>
+                    Please create a new case below.
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Case creation form
+            with st.form("create_case_form"):
+                st.subheader("Create New Case")
+                case_name = st.text_input("Case Name", help="Enter the case name (e.g., Smith v Jones)")
+                
+                if st.form_submit_button("Create Case"):
+                    try:
+                        # Create new case with hardcoded values
+                        new_case = LegalCase(
+                            case_id=uuid.uuid4(),
+                            case_reference_number=case_reference,  # Use the entered reference
+                            case_name=case_name,
+                            our_firm_id=DEFAULT_FIRM_ID,
+                            our_client_party_id=DEFAULT_CLIENT_PARTY_ID,
+                            # Optional fields with defaults
+                            court_claim_number=None,
+                            court_details_id=None,
+                            date_opened=datetime.now(UTC).date(),
+                            date_closed=None,
+                            status="Open",
+                            parties=[],
+                            fee_earners_involved_ids=[],
+                            counsels_instructed_ids=[],
+                            experts_instructed_ids=[],
+                            retainer_details_id=None,
+                            key_dates={},
+                            narrative_summary="Test case for POC",
+                            source_documents=[],
+                            work_items=[],
+                            disbursements=[],
+                            bill_of_costs_ids=[],
+                            schedule_of_costs_ids=[],
+                            precedent_h_ids=[]
+                        )
+                        
+                        # Store case in Neo4j
+                        case_id = graph_ops.create_case(new_case)
+                        st.markdown(f"""
+                            <div class="success-box">
+                                Successfully created case: {case_reference}<br>
+                                Title: {case_name}
+                            </div>
+                        """, unsafe_allow_html=True)
+                        st.session_state.current_case = new_case
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.markdown(f"""
+                            <div class="error-box">
+                                Error creating case: {str(e)}
+                            </div>
+                        """, unsafe_allow_html=True)
+
+    # File upload section - only show if we have a current case
+    if st.session_state.current_case:
+        st.header("Document Upload")
         uploaded_files = st.file_uploader(
-            "Drag and drop files here or click to browse",
-            accept_multiple_files=True,
-            type=["pdf", "docx", "txt", "eml"],
-            help="Supported formats: PDF, DOCX, TXT, EML"
+            "Upload your documents",
+            type=['pdf', 'docx', 'txt', 'eml'],
+            accept_multiple_files=True
         )
-        
-        if uploaded_files:
-            st.session_state.uploaded_files = uploaded_files
-            st.info(f"Selected {len(uploaded_files)} file(s)")
-            
-            # Show file details
-            with st.expander("File Details", expanded=True):
-                for file in uploaded_files:
-                    st.write(f"📄 {file.name} ({file.size / 1024:.1f} KB)")
-        
-        # Process Documents button
-        if st.button("Process Documents", type="primary"):
-            if not st.session_state.uploaded_files:
-                st.error("Please upload at least one document.")
-                return
-            
-            # Create progress bar
+
+        # Create a container for logs
+        log_container = st.empty()
+        # Set up logging to Streamlit
+        handler = StreamlitHandler(log_container)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger = logging.getLogger()
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+        # Process documents button
+        if uploaded_files and st.button("Process Documents"):
+            total_files = len(uploaded_files)
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # Process uploaded documents
-            for i, uploaded_file in enumerate(st.session_state.uploaded_files):
-                status = process_document(
-                    processor, 
-                    uploaded_file, 
-                    progress_bar, 
-                    status_text, 
-                    i, 
-                    len(st.session_state.uploaded_files)
-                )
-                st.session_state.processing_status[uploaded_file.name] = status
-                
-                # Track failed files
-                if status.startswith("error"):
-                    st.session_state.failed_files.append(uploaded_file)
-            
-            # Show processing results
-            st.markdown("### Processing Results")
-            for filename, status in st.session_state.processing_status.items():
-                if status == "success":
-                    st.markdown(f'<div class="success-box">✅ {filename}: Successfully processed</div>', unsafe_allow_html=True)
-                elif status.startswith("warning"):
-                    st.markdown(f'<div class="info-box">⚠️ {filename}: {status[8:]}</div>', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'<div class="error-box">❌ {filename}: {status[6:]}</div>', unsafe_allow_html=True)
-            
-            # Show reprocess button if there are failed files
-            if st.session_state.failed_files:
-                st.markdown("### Failed Documents")
-                st.warning(f"{len(st.session_state.failed_files)} documents failed to process.")
-                if st.button("🔄 Reprocess Failed Documents", type="secondary"):
-                    # Create progress bar for reprocessing
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    # Process only failed documents
-                    for i, failed_file in enumerate(st.session_state.failed_files):
-                        status = process_document(
-                            processor, 
-                            failed_file, 
-                            progress_bar, 
-                            status_text, 
-                            i, 
-                            len(st.session_state.failed_files)
-                        )
-                        st.session_state.processing_status[failed_file.name] = status
-                    
-                    # Clear failed files list
-                    st.session_state.failed_files = []
-                    
-                    # Show updated results
-                    st.markdown("### Updated Processing Results")
-                    for filename, status in st.session_state.processing_status.items():
-                        if status == "success":
-                            st.markdown(f'<div class="success-box">✅ {filename}: Successfully processed</div>', unsafe_allow_html=True)
-                        elif status.startswith("warning"):
-                            st.markdown(f'<div class="info-box">⚠️ {filename}: {status[8:]}</div>', unsafe_allow_html=True)
-                        else:
-                            st.markdown(f'<div class="error-box">❌ {filename}: {status[6:]}</div>', unsafe_allow_html=True)
-    
-    else:  # Generate Bill page
-        st.title("💰 Generate Bill of Costs")
-        st.markdown("""
-        Generate a professional bill of costs for your case. 
-        Select a case from the dropdown below to get started.
-        """)
-        
-        # Get list of cases from Neo4j
-        try:
-            cases = graph.get_all_cases()
-            if not cases:
-                st.warning("No cases found in the database. Please upload some documents first.")
-                return
-            
-            # Case selection with better formatting
-            case_options = {f"{case.reference} - {case.title}": case.id for case in cases}
-            selected_case = st.selectbox(
-                "Select a case",
-                options=list(case_options.keys()),
-                help="Choose the case for which you want to generate a bill"
-            )
-            
-            if st.button("Generate Bill", type="primary"):
+            for i, uploaded_file in enumerate(uploaded_files):
                 try:
-                    with st.spinner("Generating bill..."):
-                        # Generate bill
-                        case_id = case_options[selected_case]
-                        bill_html = bill_generator.generate_bill(case_id)
-                        
-                        # Save bill
-                        case = graph.get_case(case_id)
-                        file_path = bill_generator.save_bill(bill_html, case)
-                        
-                        # Success message
-                        st.success("Bill generated successfully!")
-                        
-                        # Download button
-                        st.download_button(
-                            label="📥 Download Bill",
-                            data=bill_html,
-                            file_name=file_path.name,
-                            mime="text/html",
-                            help="Click to download the generated bill"
-                        )
-                        
-                        # Preview
-                        st.markdown("### Bill Preview")
-                        st.components.v1.html(bill_html, height=800, scrolling=True)
-                        
-                except Exception as e:
-                    st.error(f"Error generating bill: {str(e)}")
+                    # Save uploaded file to temporary location
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+                        tmp_file.write(uploaded_file.getvalue())
+                        tmp_path = tmp_file.name
                     
-        except Exception as e:
-            st.error(f"Error loading cases: {str(e)}")
+                    # Update status
+                    status_text.text(f"Processing {uploaded_file.name}...")
+                    logger.info(f"Starting processing of {uploaded_file.name}")
+                    
+                    # Process document with status updates
+                    def update_status(message):
+                        status_text.text(f"Processing {uploaded_file.name}... {message}")
+                        logger.info(f"{uploaded_file.name}: {message}")
+                    
+                    result = processor.process_document(tmp_path, legal_case=st.session_state.current_case, status_callback=update_status)
+                    
+                    # Update progress
+                    progress = (i + 1) / total_files
+                    progress_bar.progress(progress)
+                    
+                    # Show success message
+                    st.markdown(f"""
+                        <div class="success-box">
+                            Successfully processed {uploaded_file.name}<br>
+                            Found {len(result['work_items'])} work items and {len(result['disbursements'])} disbursements
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Clean up temporary file
+                    os.unlink(tmp_path)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing {uploaded_file.name}: {str(e)}", exc_info=True)
+                    st.markdown(f"""
+                        <div class="error-box">
+                            Error processing {uploaded_file.name}: {str(e)}
+                        </div>
+                    """, unsafe_allow_html=True)
+                    st.session_state.failed_files.append(uploaded_file.name)
+            
+            # Show final status
+            if st.session_state.failed_files:
+                st.markdown(f"""
+                    <div class="error-box">
+                        Failed to process {len(st.session_state.failed_files)} files:<br>
+                        {', '.join(st.session_state.failed_files)}
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                    <div class="success-box">
+                        All documents processed successfully!
+                    </div>
+                """, unsafe_allow_html=True)
+
+        # Generate Bill section
+        st.header("Generate Bill")
+        if st.button("Generate Bill"):
+            try:
+                with st.spinner("Generating bill..."):
+                    bill = bill_generator.generate_bill(st.session_state.current_case.case_id)
+                    st.markdown(f"""
+                        <div class="success-box">
+                            Bill generated successfully!<br>
+                            Total work items: {len(bill.work_items)}<br>
+                            Total disbursements: {len(bill.disbursements)}<br>
+                            Total amount: £{bill.total_amount:.2f}
+                        </div>
+                    """, unsafe_allow_html=True)
+            except Exception as e:
+                st.markdown(f"""
+                    <div class="error-box">
+                        Error generating bill: {str(e)}
+                    </div>
+                """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main() 
