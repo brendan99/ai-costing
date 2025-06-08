@@ -1,8 +1,18 @@
 version: '3'
+
 services:
-  chromadb:
-    image: chromadb/chroma
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j-apoc
     ports:
-      - "8000:8000"
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4JLABS_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
     volumes:
-      - ./chroma_data:/chroma/.chroma/index
+      - ./neo4j/data:/data
+      - ./neo4j/logs:/logs
+      - ./neo4j/plugins:/plugins 

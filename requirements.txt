@@ -1,17 +1,19 @@
-# Core RAG Framework
-chromadb>=0.4.22
-requests>=2.31.0
-
-# Web Interface
-streamlit==1.29.0
-
-# Document Processing
-python-docx==1.1.0
-pypdf>=3.0.0
-PyMuPDF>=1.23.8
-
-# Utilities
-python-dotenv>=1.0.1
-pathlib==1.0.1
-watchdog==3.0.0
-numpy>=1.19.3,<2.0.0 
+langchain>=0.1.0
+langchain-community>=0.0.10
+langchain-experimental>=0.0.10
+langchain-ollama>=0.0.1
+neo4j>=5.14.0
+ollama>=0.1.0
+langchain-neo4j>=0.0.1
+sentence-transformers>=2.2.2
+pypdf>=3.17.0
+python-docx>=1.0.0
+unstructured>=0.10.30
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+typer>=0.9.0
+pytest>=7.4.0
+pytest-cov>=4.1.0
+ruff>=0.1.0
+jinja2>=3.1.0 

@@ -1,157 +1,90 @@
-# UK Legal Costing RAG System
+# AI Costing Graph
 
-A Streamlit-based application that uses RAG (Retrieval-Augmented Generation) to process and analyze UK legal documents, specifically optimized for legal costing workflows, bills of costs, and solicitor-client cost assessment.
+A RAG (Retrieval-Augmented Generation) pipeline for generating legal costing documents using Ollama, Langchain, and Neo4j.
 
 ## Prerequisites
 
-- macOS (tested on M4 MacBook Pro)
-- Python 3.11+
-- Docker and Docker Compose
-- 48GB RAM (recommended for optimal performance)
+- Python 3.9+
+- Neo4j Desktop or Docker
+- Ollama installed and running
 
-## Installation
+## Setup
 
-1. Clone the repository:
-```bash
-git clone https://github.com/brendan99/ai-costing.git
-cd ai-costing
-```
+1. Install Ollama:
+   ```bash
+   # For macOS
+   curl https://ollama.ai/install.sh | sh
+   ```
 
-2. Create and activate virtual environment:
-```bash
-python -m venv legal_rag_env
-source legal_rag_env/bin/activate
-```
+2. Pull required Ollama models:
+   ```bash
+   ollama pull mistral
+   ollama pull nomic-embed-text
+   ```
 
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+3. Create and activate a virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On macOS/Linux
+   ```
 
-4. Start ChromaDB using Docker:
-```bash
-docker-compose up -d
-```
+4. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## Running the Application
+5. Set up Neo4j:
+   - Install Neo4j Desktop or run via Docker
+   - Create a new database
+   - Note your connection details (URI, username, password)
 
-1. Ensure ChromaDB is running:
-```bash
-docker-compose ps
-```
-
-2. Run the Streamlit app:
-```bash
-streamlit run app.py
-```
-
-## Usage
-
-1. Upload your legal documents using the sidebar uploader
-   - Supported formats: PDF, TXT, DOCX, MD
-   - Documents will be automatically processed and indexed
-   - Maximum file size: 10MB per document
-
-2. Monitor document processing
-   - View real-time processing status in the sidebar
-   - Check document status and chunk counts
-   - Monitor system resource usage
-
-3. Search your documents
-   - Enter your query in the search box
-   - Results will show relevant document chunks
-   - View source documents and relevance scores
-
-4. Manage your documents
-   - View processing status for each document
-   - Re-index documents if needed
-   - Clear processed documents using the Reset All button
-
-## Features
-
-- **Document Processing**
-  - Automatic text extraction from multiple formats
-  - Smart chunking with overlap preservation
-  - Metadata extraction and preservation
-  - Progress tracking and status updates
-
-- **Vector Search**
-  - Semantic search using BGE embeddings
-  - Relevance scoring and ranking
-  - Source document tracking
-  - Chunk-level retrieval
-
-- **Resource Management**
-  - Memory usage monitoring
-  - Automatic garbage collection
-  - Efficient storage management
-  - Background processing
+6. Create a `.env` file:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your Neo4j and other configuration
+   ```
 
 ## Project Structure
 
 ```
-.
-├── app.py                 # Main Streamlit application
-├── requirements.txt       # Python dependencies
-├── docker-compose.yml    # ChromaDB configuration
-├── uploads/              # Temporary upload directory
-├── processed/            # Processed documents
-├── storage/              # ChromaDB persistence
-└── README.md            # This file
+ai-costing-graph/
+├── src/
+│   ├── models/          # Pydantic models
+│   ├── graph/           # Neo4j graph operations
+│   ├── llm/             # LLM and embedding operations
+│   ├── document/        # Document processing
+│   └── generation/      # Document generation
+├── tests/               # Test files
+├── data/               # Sample data and documents
+└── scripts/            # Utility scripts
 ```
 
-## System Requirements
+## Latest RAG Workflow
 
-- **Hardware**
-  - 48GB RAM recommended
-  - M4/M3/M2 MacBook Pro or equivalent
-  - Sufficient disk space for document storage
+The latest RAG workflow includes the following steps:
 
-- **Software**
-  - Python 3.11 or higher
-  - Docker and Docker Compose
-  - Modern web browser
+1. **Document Upload**:  
+   Upload legal documents using the sidebar uploader. Supported formats include PDF, TXT, DOCX, and MD.
 
-## Troubleshooting
+2. **Document Processing**:  
+   - Documents are automatically processed and indexed.
+   - Smart chunking with overlap preservation is applied.
+   - Metadata extraction and preservation are performed.
 
-### Common Issues
+3. **Vector Search**:  
+   - Semantic search using BGE embeddings is utilized.
+   - Results show relevant document chunks with source documents and relevance scores.
 
-1. **ChromaDB Connection Issues**
-   - Ensure Docker is running
-   - Check ChromaDB container status
-   - Verify port 8000 is available
+4. **Disbursement Creation**:  
+   - Disbursements are created and stored in a Neo4j database.
+   - A duplicate ID check is implemented to prevent errors during creation.
+   - Logging is added to track the creation process and any potential issues.
 
-2. **Memory Issues**
-   - Monitor memory usage in the sidebar
-   - Close other applications to free RAM
-   - Use the Reset All button to clear memory
+5. **Resource Management**:  
+   - Memory usage monitoring and automatic garbage collection are implemented.
+   - Efficient storage management is ensured.
 
-3. **Document Processing Issues**
-   - Check file size limits (10MB max)
-   - Verify supported file formats
-   - Monitor processing status in sidebar
+## Usage
 
-4. **Search Issues**
-   - Ensure documents are properly indexed
-   - Check document processing status
-   - Verify search query format
-
-## Data Privacy
-
-- All processing happens locally
-- Documents are stored in temporary directories
-- Vector embeddings are stored in ChromaDB
-- No data is sent to external services
-- Use Reset All to clear all data
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
+1. Start Ollama:
+   ```
